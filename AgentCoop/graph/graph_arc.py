@@ -59,6 +59,8 @@ class Graph(ABC):
                 hidden_dim:int = 64,
                 solution_dim:int = 4,
                 sentence_transformer: str = 'all-MiniLM-L6-v2',
+                sender_budget:int = 1,
+                receiver_budget:int = 1,
                 device: str = 'cuda',
                 node_kwargs:List[Dict] = None,
                 ):
@@ -105,6 +107,9 @@ class Graph(ABC):
         self.sentence_transformer = SentenceTransformer(sentence_transformer)
         
         self.prompt_set = PromptSetRegistry.get(domain)
+
+        self.sender_budget = sender_budget
+        self.receiver_budget = receiver_budget
 
         self.device = device
 
@@ -183,13 +188,14 @@ class Graph(ABC):
 
     def construct_comm_connection(self, reliable_scores: torch.Tensor, epsilon: float = 0.1, training: bool = True): 
         """
-        Constructs the communication graph based on agent reliability scores.
+        Constructs the communication graph based on agent reliability scores with budget constraints.
         
         Args:
             reliable_scores: [N] or [N, 1] Tensor of scores (0 to 1).
             epsilon: Probability of random exploration flip during training.
             training: Whether to use training mode.
-            epsilon: Probability of random exploration flip during training.
+            send_budget: Max number of messages an agent can SEND.
+            receive_budget: Max number of messages an agent can RECEIVE.
         """
         self.clear_comm_connection()
         
@@ -198,68 +204,72 @@ class Graph(ABC):
         sum_log_probs = torch.tensor(0.0, device=self.device)
         
         # --- LOGIC BRANCHING --
-        # MODE 1: TRAINING (Stochastic + Exploration)
         if training:
             # 1. Stability Clamp
-            # Prevents log(0) which causes NaNs during backprop if probability is 0.0 or 1.0
             probs = torch.clamp(reliable_scores, min=1e-6, max=1.0 - 1e-6)
             
             # 2. Policy Distribution
             dist = torch.distributions.Bernoulli(probs=probs)
-            
-            # 3. Initial Sample (What the model wants to do)
             policy_samples = dist.sample()
             
-            # 4. Apply Epsilon-Greedy Exploration
-            # We create a noise mask where 1 = "flip the decision"
+            # 3. Apply Epsilon-Greedy Exploration
             noise_dist = torch.distributions.Bernoulli(
                 probs=torch.full_like(policy_samples, epsilon)
             )
             noise_mask = noise_dist.sample()
-            
-            # XOR Logic: Flip policy if noise is 1 (0->1, 1->0)
-            # abs(a - b) acts as XOR for 0/1 floats
             exec_samples = torch.abs(policy_samples - noise_mask)
 
-            # 5. Compute Log Probs on EXECUTED Samples
-            # CRITICAL: We calculate prob of the *executed* action under the *original* policy.
-            # This allows REINFORCE to learn "I should have done what the noise forced me to do"
-            # if it yields a high reward.
+            # 4. Compute Log Probs
             action_log_probs = dist.log_prob(exec_samples)
             sum_log_probs = action_log_probs.sum()
         else:
             cutoff = torch.round(reliable_scores.mean(), decimals=4)
-            
-            # Create binary mask (1.0 or 0.0)
             exec_samples = (reliable_scores > cutoff).float().to(self.device)
 
         # --- GRAPH CONSTRUCTION ---
-        # Optimization: Move tensor to CPU lists once to avoid 
-        # hundreds of .item() calls inside the nested loop (slows down GPU sync)
         exec_samples_cpu = exec_samples.detach().cpu().numpy()
         
-        # We sort to prioritize high-reliability nodes adding edges first.
-        # This is a heuristic to make the DAG consistent with reliability.
+        # Sort to prioritize high-reliability nodes 
         sorted_scores, sorted_idx = torch.sort(reliable_scores, descending=True)
         sorted_idx_cpu = sorted_idx.cpu().numpy()
         
         adj = torch.zeros(len(self.nodes), len(self.nodes), device=self.device)
 
-        # Loop over indices using standard Python integers (Fast)
+        # --- NEW: Budget Tracking ---
+        # We track how many edges each node has sent/received
+        # Using a simple CPU array or tensor for fast lookup
+        send_counts = torch.zeros(len(self.nodes), dtype=torch.long, device=self.device)
+        recv_counts = torch.zeros(len(self.nodes), dtype=torch.long, device=self.device)
+
+        # Loop over indices (High reliability senders first)
         for i in range(len(sorted_idx_cpu)):
             sender_idx = sorted_idx_cpu[i]
             
             # If this node is "Off", it cannot send messages
             if exec_samples_cpu[sender_idx] == 0:
                 continue
-            
+                
             sender_id = self.idx_to_node_id[sender_idx]
             sender = self.find_node(sender_id)
 
+            # Iterate through potential receivers
             for j in range(len(sorted_idx_cpu)):
                 receiver_idx = sorted_idx_cpu[j]
                 
-                # If receiver node is "Off", it cannot receive messages
+                # --- Budget Constraint Checks ---
+                
+                # 1. Sender Budget Check: 
+                # If current sender is full, stop trying to find more receivers.
+                if send_counts[sender_idx] >= self.sender_budget:
+                    break 
+
+                # 2. Receiver Budget Check:
+                # If candidate receiver is full, skip them and try the next one.
+                if recv_counts[receiver_idx] >= self.receiver_budget:
+                    continue
+
+                # 3. Participation Check:
+                # If receiver node is "Off", it cannot receive
                 if exec_samples_cpu[receiver_idx] == 0:
                     continue
                 
@@ -275,16 +285,18 @@ class Graph(ABC):
                     continue
                 
                 # Check for cycle (DAG enforcement)
-                # Since we iterate sorted by score, high-score nodes tend to be parents.
                 if self.check_cycle(receiver, {sender}):
                     continue
                 
                 # Update Node State and Adjacency Matrix
                 sender.add_successor(receiver) 
                 adj[receiver_idx, sender_idx] = 1.0
+                
+                # --- NEW: Update Counts ---
+                send_counts[sender_idx] += 1
+                recv_counts[receiver_idx] += 1
 
         return sum_log_probs, adj, exec_samples
-
 
     def construct_node_features(self):
         node_features = []

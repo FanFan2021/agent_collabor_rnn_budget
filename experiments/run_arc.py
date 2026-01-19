@@ -75,6 +75,11 @@ def parse_args():
     parser.add_argument('--sentence_transformer', type=str, default='all-MiniLM-L6-v2',
                         help="The sentence transformer model name")
     
+    parser.add_argument('--sender_budget', type=int, default=1,
+                        help="The budget for the sender")
+    parser.add_argument('--receiver_budget', type=int, default=1,
+                        help="The budget for the receiver")
+    
 
     # attack args
     parser.add_argument('--attack_rounds', type=int, default=2,
@@ -168,6 +173,8 @@ async def main():
         f"aod{args.analysis_output_dim}",
         f"sd{args.solution_dim}",
         f"st{args.sentence_transformer}",
+        f"sb{args.sender_budget}",
+        f"rb{args.receiver_budget}",
         f"lr{args.lr}",
         f"bs{args.batch_size}",
         f"rnd{args.num_rounds}",
@@ -217,6 +224,8 @@ async def main():
                   solution_dim=args.solution_dim,
                   sentence_transformer=args.sentence_transformer,
                   device=args.device,
+                  sender_budget=args.sender_budget,
+                  receiver_budget=args.receiver_budget,
                   **kwargs)
     
     dataset_train = load_arc_challenge(split="train")
