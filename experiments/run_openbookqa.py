@@ -94,7 +94,7 @@ def parse_args():
 
 
     # wandb args
-    parser.add_argument('--wandb_project', type=str, default="AgentCoop-OpenBookQA-RNN-Linear",
+    parser.add_argument('--wandb_project', type=str, default="AgentCoop-OpenBookQA-ADV-Budget",
                         help="The wandb project name")
     parser.add_argument('--wandb_entity', type=str, default="hiwenzhe",
                         help="The wandb entity name")
