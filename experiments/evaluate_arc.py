@@ -51,6 +51,9 @@ async def evaluate(
         options = ["A", "B", "C", "D"]
     else:
         options = None
+    
+    predict_losses = []
+    predict_accs = []
 
     for i_batch, record_batch in tqdm(enumerate(eval_loader(batch_size=eval_batch_size)), total=num_batches):
         print(80*'-')
