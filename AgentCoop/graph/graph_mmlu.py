@@ -797,7 +797,7 @@ class Graph(ABC):
         
         if attack_mode == "fixed":
             # FIXED: Fixed number of agents flip at a Fixed round
-            num_adv = int(num_nodes * attack_rate)
+            num_adv = int(math.ceil(num_nodes * attack_rate))
             adv_indices = random.sample(range(num_nodes), num_adv)
             for idx in adv_indices:
                 flip_schedule[idx] = attack_rounds
@@ -806,7 +806,7 @@ class Graph(ABC):
             # RANDOM: Random number of agents flip at different Random rounds
             # RANDOM: A random number of agents (between 2 and CAP) flip at random rounds
             # Here, attack_rate sets the upper bound
-            num_adv = max(2, int(num_nodes * attack_rate)) 
+            num_adv = max(2, int(math.ceil(num_nodes * attack_rate))) 
             adv_indices = random.sample(range(num_nodes), num_adv)
             for idx in adv_indices:
                 flip_schedule[idx] = random.randint(2, max(2, num_rounds - 1))
